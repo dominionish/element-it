@@ -1,8 +1,8 @@
 import argparse
 import json
+import math
 import shutil
 import subprocess
-import threading
 import time
 from pathlib import Path
 
@@ -26,19 +26,10 @@ MODEL_LABELS = {
     "medium": "Рабочий режим",
     "large-v3": "Максимальное качество",
 }
-LOG_STATE = threading.local()
 
 
 def log(msg=""):
     print(msg, flush=True)
-    stream = getattr(LOG_STATE, "stream", None)
-    if stream is not None:
-        stream.write(str(msg) + "\n")
-        stream.flush()
-
-
-def set_log_stream(stream):
-    LOG_STATE.stream = stream
 
 
 def fmt_time(sec):
@@ -193,12 +184,12 @@ def transcribe(
     if not input_file.exists():
         raise FileNotFoundError(f"Файл не найден: {input_file}")
 
-    # Each job gets its own workspace. The old shared directories were removed
-    # by a second job when several Planfix attachments arrived together.
-    work_dir = Path("/tmp/whisper_work") / output_dir.name
-    chunks_dir = work_dir / "chunks"
+    work_dir = Path("/tmp/whisper_work")
+    chunks_dir = Path("/tmp/whisper_chunks")
     if work_dir.exists():
         shutil.rmtree(work_dir)
+    if chunks_dir.exists():
+        shutil.rmtree(chunks_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
     chunks_dir.mkdir(parents=True, exist_ok=True)
 
