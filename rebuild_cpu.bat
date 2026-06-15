@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-echo Starting n8n and Whisper Transcriber API with GPU...
+echo Rebuilding Whisper Transcriber CPU image...
 where docker >nul 2>nul
 if errorlevel 1 (
   echo ERROR: Docker not found. Install Docker Desktop and start it.
@@ -15,5 +15,11 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-docker compose -f docker-compose.gpu.yml up
+docker compose -f docker-compose.cpu.yml build transcriber
+if errorlevel 1 (
+  echo ERROR: CPU image build failed.
+  pause
+  exit /b 1
+)
+docker compose -f docker-compose.cpu.yml up
 pause

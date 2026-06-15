@@ -17,12 +17,7 @@ services:
     restart: unless-stopped
 
   transcriber:
-    build:
-      context: ./transcriber
-      args:
-        BASE_IMAGE: nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
-        TORCH_VERSION: 2.7.1+cu126
-        TORCH_INDEX_URL: https://download.pytorch.org/whl/cu126
+    image: ${TRANSCRIBER_IMAGE:?Set TRANSCRIBER_IMAGE in .env, for example ghcr.io/owner/repo/transcriber:latest}
     container_name: whisper_transcriber_api
     ports:
       - "${TRANSCRIBER_HOST_PORT:-7861}:7861"

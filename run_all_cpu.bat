@@ -15,5 +15,5 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-docker compose -f docker-compose.cpu.yml up --build
+docker compose -f docker-compose.cpu.yml up
 pause

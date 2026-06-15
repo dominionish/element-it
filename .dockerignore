@@ -1,0 +1,16 @@
+.git
+.github
+.env
+.env.*
+!.env.example
+
+data
+models
+n8n_data
+
+__pycache__
+*.pyc
+*.pyo
+*.log
+.pytest_cache
+.ruff_cache

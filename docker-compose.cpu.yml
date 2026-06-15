@@ -1,28 +1,43 @@
 services:
   n8n:
-    image: n8nio/n8n:latest
+    image: ${N8N_IMAGE:-n8nio/n8n:2.25.4}
     container_name: n8n_transcriber
     ports:
-      - "5678:5678"
+      - "${N8N_HOST_PORT:-5678}:5678"
     environment:
-      - TZ=Europe/Moscow
-      - N8N_SECURE_COOKIE=false
-      - N8N_HOST=localhost
+      - TZ=${TZ:-Europe/Moscow}
+      - N8N_SECURE_COOKIE=${N8N_SECURE_COOKIE:-false}
+      - N8N_HOST=${N8N_HOST:-localhost}
       - N8N_PORT=5678
-      - N8N_PROTOCOL=http
+      - N8N_PROTOCOL=${N8N_PROTOCOL:-http}
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
     volumes:
       - ./n8n_data:/home/node/.n8n
       - ./data:/data
     restart: unless-stopped
 
   transcriber:
-    build: ./transcriber
+    build:
+      context: ./transcriber
+      args:
+        BASE_IMAGE: ubuntu:22.04
+        TORCH_VERSION: 2.7.1+cpu
+        TORCH_INDEX_URL: https://download.pytorch.org/whl/cpu
     container_name: whisper_transcriber_api
     ports:
-      - "7861:7861"
+      - "${TRANSCRIBER_HOST_PORT:-7861}:7861"
     environment:
-      - TZ=Europe/Moscow
+      - TZ=${TZ:-Europe/Moscow}
       - DATA_DIR=/data
+      - PLANFIX_AUDIO_EXTENSIONS=${PLANFIX_AUDIO_EXTENSIONS:-.mp3,.m4a,.wav,.ogg,.opus,.webm,.aac,.flac,.mp4,.mov,.mkv,.avi}
+      - PLANFIX_CREATE_TRANSCRIBE_JOBS=${PLANFIX_CREATE_TRANSCRIBE_JOBS:-true}
+      - PLANFIX_ALLOWED_FILE_URL_HOSTS=${PLANFIX_ALLOWED_FILE_URL_HOSTS:-planfix.ru,.planfix.ru}
+      - PLANFIX_FILE_URL_TIMEOUT=${PLANFIX_FILE_URL_TIMEOUT:-120}
+      - PLANFIX_RESULT_WEBHOOK_ID=${PLANFIX_RESULT_WEBHOOK_ID:-}
+      - PLANFIX_RESULT_WEBHOOK_URL=${PLANFIX_RESULT_WEBHOOK_URL:-}
+      - PLANFIX_RESULT_FILE_FIELD=${PLANFIX_RESULT_FILE_FIELD:-txt_file}
+      - PLANFIX_RESULT_TIMEOUT=${PLANFIX_RESULT_TIMEOUT:-120}
+      - PLANFIX_ALLOWED_RESULT_HOSTS=${PLANFIX_ALLOWED_RESULT_HOSTS:-planfix.ru,.planfix.ru}
     volumes:
       - ./data:/data
       - ./models:/models

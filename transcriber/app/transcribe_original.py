@@ -1,8 +1,10 @@
 import argparse
 import json
-import math
+import os
 import shutil
 import subprocess
+import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -26,10 +28,21 @@ MODEL_LABELS = {
     "medium": "Рабочий режим",
     "large-v3": "Максимальное качество",
 }
+LOG_STATE = threading.local()
+MODEL_DIR = Path(os.getenv("MODEL_DIR", "/models"))
+WORK_DIR = Path(os.getenv("WORK_DIR", Path(tempfile.gettempdir()) / "whisper_work"))
 
 
 def log(msg=""):
     print(msg, flush=True)
+    stream = getattr(LOG_STATE, "stream", None)
+    if stream is not None:
+        stream.write(str(msg) + "\n")
+        stream.flush()
+
+
+def set_log_stream(stream):
+    LOG_STATE.stream = stream
 
 
 def fmt_time(sec):
@@ -85,7 +98,7 @@ def choose_safe_model(requested_model: str):
 
 def prepare_audio_ffmpeg(input_file: Path, output_wav: Path, enhance: bool):
     if shutil.which("ffmpeg") is None:
-        raise RuntimeError("ffmpeg не найден внутри контейнера")
+        raise RuntimeError("ffmpeg не найден в PATH")
 
     filters = ["aresample=16000", "aformat=channel_layouts=mono"]
     if enhance:
@@ -184,12 +197,12 @@ def transcribe(
     if not input_file.exists():
         raise FileNotFoundError(f"Файл не найден: {input_file}")
 
-    work_dir = Path("/tmp/whisper_work")
-    chunks_dir = Path("/tmp/whisper_chunks")
+    # Each job gets its own workspace. The old shared directories were removed
+    # by a second job when several Planfix attachments arrived together.
+    work_dir = WORK_DIR / output_dir.name
+    chunks_dir = work_dir / "chunks"
     if work_dir.exists():
         shutil.rmtree(work_dir)
-    if chunks_dir.exists():
-        shutil.rmtree(chunks_dir)
     work_dir.mkdir(parents=True, exist_ok=True)
     chunks_dir.mkdir(parents=True, exist_ok=True)
 
@@ -250,7 +263,8 @@ def transcribe(
 
     log(f"⏳ Загружаю модель Whisper: {model_name}")
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = whisper.load_model(model_name, device=device, download_root="/models")
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    model = whisper.load_model(model_name, device=device, download_root=str(MODEL_DIR))
     log(f"✅ Модель загружена на устройство: {device}")
     log("⏳ Начинаю расшифровку. Это самый долгий этап.")
     log("")
