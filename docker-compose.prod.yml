@@ -17,7 +17,7 @@ services:
     restart: unless-stopped
 
   transcriber:
-    build: ./transcriber
+    image: ${TRANSCRIBER_IMAGE:?Set TRANSCRIBER_IMAGE in .env, for example ghcr.io/owner/repo/transcriber:latest}
     container_name: whisper_transcriber_api
     ports:
       - "${TRANSCRIBER_HOST_PORT:-7861}:7861"
@@ -37,7 +37,16 @@ services:
       - PLANFIX_API_BASE_URL=${PLANFIX_API_BASE_URL:-}
       - PLANFIX_ALLOWED_API_HOSTS=${PLANFIX_ALLOWED_API_HOSTS:-planfix.ru,.planfix.ru}
       - PLANFIX_API_TIMEOUT=${PLANFIX_API_TIMEOUT:-120}
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - NVIDIA_DRIVER_CAPABILITIES=${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
     volumes:
       - ./data:/data
       - ./models:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     restart: unless-stopped
