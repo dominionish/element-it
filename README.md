@@ -41,7 +41,7 @@ CPU будет сильно медленнее. Для нормальной ра
 GitHub Actions собирает и публикует образ transcriber в GitHub Container Registry:
 
 ```text
-ghcr.io/dominionish/element-it/transcriber
+ghcr.io/element-it/element-it/transcriber
 ```
 
 Публикация запускается после успешных базовых CI-проверок:
@@ -58,14 +58,14 @@ ghcr.io/dominionish/element-it/transcriber
 Для продового запуска укажи в `.env`:
 
 ```text
-TRANSCRIBER_IMAGE=ghcr.io/dominionish/element-it/transcriber:latest
+TRANSCRIBER_IMAGE=ghcr.io/element-it/element-it/transcriber:latest
 ```
 
-## Автоматический деплой на второй Windows-компьютер без Docker
+## Автоматический деплой на второй Windows-компьютер через Docker в WSL
 
-Для CD не нужны Docker и WSL. Workflow `.github/workflows/deploy.yml` после
-успешного `CI` обновляет нативные Python/n8n-процессы при каждом `push` в
-`main`.
+Workflow `.github/workflows/deploy.yml` после успешного `CI` обновляет сервер
+при каждом `push` в `main`. Сервис запускается через Docker Compose внутри WSL2
+Ubuntu. Docker Desktop для этого не нужен.
 
 Скопируй на второй компьютер только файл `setup-server.ps1`, открой PowerShell
 от администратора и запусти:
@@ -81,21 +81,45 @@ Set-ExecutionPolicy -Scope Process Bypass
    `Settings -> Actions -> Runners -> New self-hosted runner`.
 2. Пароль для локального пользователя `github-runner`.
 
-Остальное он выполнит сам: установит Git, Python, Node.js, FFmpeg, .NET и
-Visual C++ Runtime; создаст пользователя и каталоги; скачает и проверит GitHub
-runner; зарегистрирует его как службу с меткой `deploy`; создаст `.env`; и
-откроет порты `5678` и `7861`.
+Остальное он выполнит сам:
 
-Следующие обновления установят зависимости только при их изменении и
-перезапустят задание `n8n-whisper-transcriber` в Планировщике заданий Windows.
-Оно автоматически запускает и контролирует:
+- включит WSL2 и установит Ubuntu;
+- установит Docker Engine и Docker Compose plugin внутри Ubuntu;
+- установит NVIDIA Container Toolkit внутри Ubuntu;
+- проверит CUDA через контейнер `nvidia/cuda:12.6.3-base-ubuntu22.04`;
+- установит Git, .NET и Visual C++ Runtime для GitHub runner;
+- создаст пользователя `github-runner`;
+- скачает и зарегистрирует self-hosted runner как Windows-службу с меткой
+  `deploy`;
+- создаст `/opt/n8n_whisper_transcriber/.env` внутри WSL;
+- откроет порты `5678` и `7861` в Windows Firewall.
 
-- transcriber API на порту `7861`;
-- n8n на порту `5678`.
+Если Windows потребует перезагрузку для WSL, установщик создаст задачу
+продолжения и возобновится после входа в систему.
 
-Данные находятся в `DEPLOY_DIR\data`, `DEPLOY_DIR\models` и
-`DEPLOY_DIR\n8n_data`; обновление репозитория их не удаляет. Логи процессов
-находятся в `DEPLOY_DIR\service_logs`.
+После этого каждый успешный `CI` в `main` запускает CD, который выполняет внутри
+WSL:
+
+```bash
+docker compose pull
+docker compose up -d --remove-orphans
+```
+
+Данные находятся внутри WSL:
+
+- `/opt/n8n_whisper_transcriber/data`;
+- `/opt/n8n_whisper_transcriber/models`;
+- `/opt/n8n_whisper_transcriber/n8n_data`;
+- `/opt/n8n_whisper_transcriber/.env`.
+
+Проверка на сервере:
+
+```powershell
+wsl -d Ubuntu -u root -- docker ps
+wsl -d Ubuntu -u root -- docker compose -f /opt/n8n_whisper_transcriber/docker-compose.prod.yml --env-file /opt/n8n_whisper_transcriber/.env ps
+Invoke-RestMethod http://localhost:7861/health
+Invoke-WebRequest http://localhost:5678 -UseBasicParsing
+```
 
 ## Быстрая проверка без n8n
 

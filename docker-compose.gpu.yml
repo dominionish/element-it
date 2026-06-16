@@ -20,7 +20,7 @@ services:
     build:
       context: ./transcriber
       args:
-        BASE_IMAGE: nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04
+        BASE_IMAGE: nvidia/cuda:12.6.3-cudnn-runtime-ubuntu22.04
         TORCH_VERSION: 2.7.1+cu126
         TORCH_INDEX_URL: https://download.pytorch.org/whl/cu126
     container_name: whisper_transcriber_api

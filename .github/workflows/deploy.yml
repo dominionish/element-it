@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  packages: read
 
 concurrency:
   group: production-deploy
@@ -23,8 +24,12 @@ jobs:
     runs-on: [self-hosted, windows, deploy]
     timeout-minutes: 60
     env:
-      DEPLOY_DIR: ${{ vars.DEPLOY_DIR || 'C:\services\n8n_whisper_transcriber' }}
+      WSL_DISTRO: ${{ vars.WSL_DISTRO || 'Ubuntu' }}
+      WSL_DEPLOY_DIR: ${{ vars.WSL_DEPLOY_DIR || '/opt/n8n_whisper_transcriber' }}
       DEPLOY_SHA: ${{ github.event.workflow_run.head_sha }}
+      REPOSITORY: ${{ github.repository }}
+      GHCR_USERNAME: ${{ github.actor }}
+      GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - name: Checkout deployed revision
@@ -32,15 +37,17 @@ jobs:
         with:
           ref: ${{ env.DEPLOY_SHA }}
 
-      - name: Deploy native Windows services
+      - name: Deploy with Docker in WSL
         shell: powershell
         run: |
           $ErrorActionPreference = "Stop"
 
-          if ([string]::IsNullOrWhiteSpace($env:DEPLOY_DIR)) {
-            throw "Set the DEPLOY_DIR repository variable, for example C:\services\n8n_whisper_transcriber"
-          }
-
-          & "$env:GITHUB_WORKSPACE\scripts\windows\deploy-native.ps1" `
+          powershell.exe -NoProfile -ExecutionPolicy Bypass `
+            -File "$env:GITHUB_WORKSPACE\scripts\windows\deploy-docker.ps1" `
             -SourceDir $env:GITHUB_WORKSPACE `
-            -DeployDir $env:DEPLOY_DIR
+            -WslDistro $env:WSL_DISTRO `
+            -WslDeployDir $env:WSL_DEPLOY_DIR `
+            -DeploySha $env:DEPLOY_SHA `
+            -Repository $env:REPOSITORY `
+            -GhcrUsername $env:GHCR_USERNAME `
+            -GhcrToken $env:GHCR_TOKEN
