@@ -107,23 +107,35 @@ mkdir -p "`$DEPLOY_DIR"/data "`$DEPLOY_DIR"/models "`$DEPLOY_DIR"/n8n_data
 chown -R 1000:1000 "`$DEPLOY_DIR"/n8n_data
 "@
 
-$deployUnc = ConvertTo-WslUncPath -LinuxPath $WslDeployDir
-if (-not (Test-Path -LiteralPath $deployUnc)) {
-    throw "Could not access WSL deploy directory through UNC path: $deployUnc"
+$composePath = Join-Path $SourceDir "docker-compose.prod.yml"
+if (-not (Test-Path -LiteralPath $composePath)) {
+    throw "Missing docker-compose.prod.yml at $composePath"
 }
 
-Copy-Item -LiteralPath (Join-Path $SourceDir "docker-compose.prod.yml") -Destination (Join-Path $deployUnc "docker-compose.prod.yml") -Force
-
-$envPath = Join-Path $deployUnc ".env"
-if (-not (Test-Path -LiteralPath $envPath)) {
-    Copy-Item -LiteralPath (Join-Path $SourceDir ".env.example") -Destination $envPath
-    $key = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(48))
-    $content = Get-Content -LiteralPath $envPath
-    $content = $content -replace "^TZ=.*", "TZ=Asia/Yekaterinburg"
-    $content = $content -replace "^N8N_HOST=.*", "N8N_HOST=localhost"
-    $content = $content -replace "^N8N_ENCRYPTION_KEY=.*", "N8N_ENCRYPTION_KEY=$key"
-    Set-Content -LiteralPath $envPath -Value $content -Encoding UTF8
+$envExamplePath = Join-Path $SourceDir ".env.example"
+if (-not (Test-Path -LiteralPath $envExamplePath)) {
+    throw "Missing .env.example at $envExamplePath"
 }
+
+$encodedCompose = [Convert]::ToBase64String([IO.File]::ReadAllBytes($composePath))
+$key = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(48))
+$envContent = Get-Content -LiteralPath $envExamplePath -Raw
+$envContent = $envContent -replace "(?m)^TZ=.*", "TZ=Asia/Yekaterinburg"
+$envContent = $envContent -replace "(?m)^N8N_HOST=.*", "N8N_HOST=localhost"
+$envContent = $envContent -replace "(?m)^N8N_ENCRYPTION_KEY=.*", "N8N_ENCRYPTION_KEY=$key"
+$envContent = $envContent -replace "`r`n", "`n" -replace "`r", "`n"
+$encodedEnv = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($envContent))
+
+Invoke-WslRoot -Script @"
+set -euo pipefail
+DEPLOY_DIR=$(Quote-Bash $WslDeployDir)
+printf '%s' '$encodedCompose' | base64 -d >"`$DEPLOY_DIR/docker-compose.prod.yml"
+chmod 644 "`$DEPLOY_DIR/docker-compose.prod.yml"
+if [ ! -f "`$DEPLOY_DIR/.env" ]; then
+  printf '%s' '$encodedEnv' | base64 -d >"`$DEPLOY_DIR/.env"
+  chmod 600 "`$DEPLOY_DIR/.env"
+fi
+"@
 
 $repositoryLower = $Repository.ToLowerInvariant()
 $image = "ghcr.io/$repositoryLower/transcriber:sha-$DeploySha"
