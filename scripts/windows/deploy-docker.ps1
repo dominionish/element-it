@@ -26,6 +26,18 @@ function Quote-Bash {
     return "'" + $Value.Replace("'", "'\''") + "'"
 }
 
+function New-RandomKey {
+    $bytes = [byte[]]::new(48)
+    $generator = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        $generator.GetBytes($bytes)
+    }
+    finally {
+        $generator.Dispose()
+    }
+    return [Convert]::ToBase64String($bytes)
+}
+
 function Invoke-WslRoot {
     param([string]$Script)
 
@@ -118,7 +130,7 @@ if (-not (Test-Path -LiteralPath $envExamplePath)) {
 }
 
 $encodedCompose = [Convert]::ToBase64String([IO.File]::ReadAllBytes($composePath))
-$key = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(48))
+$key = New-RandomKey
 $envContent = Get-Content -LiteralPath $envExamplePath -Raw
 $envContent = $envContent -replace "(?m)^TZ=.*", "TZ=Asia/Yekaterinburg"
 $envContent = $envContent -replace "(?m)^N8N_HOST=.*", "N8N_HOST=localhost"
