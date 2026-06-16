@@ -38,16 +38,14 @@ jobs:
           ref: ${{ env.DEPLOY_SHA }}
 
       - name: Deploy with Docker in WSL
-        shell: powershell
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          powershell.exe -NoProfile -ExecutionPolicy Bypass `
-            -File "$env:GITHUB_WORKSPACE\scripts\windows\deploy-docker.ps1" `
-            -SourceDir $env:GITHUB_WORKSPACE `
-            -WslDistro $env:WSL_DISTRO `
-            -WslDeployDir $env:WSL_DEPLOY_DIR `
-            -DeploySha $env:DEPLOY_SHA `
-            -Repository $env:REPOSITORY `
-            -GhcrUsername $env:GHCR_USERNAME `
-            -GhcrToken $env:GHCR_TOKEN
+        shell: cmd
+        run: >-
+          powershell.exe -NoProfile -ExecutionPolicy Bypass
+          -File "%GITHUB_WORKSPACE%\scripts\windows\deploy-docker.ps1"
+          -SourceDir "%GITHUB_WORKSPACE%"
+          -WslDistro "%WSL_DISTRO%"
+          -WslDeployDir "%WSL_DEPLOY_DIR%"
+          -DeploySha "%DEPLOY_SHA%"
+          -Repository "%REPOSITORY%"
+          -GhcrUsername "%GHCR_USERNAME%"
+          -GhcrToken "%GHCR_TOKEN%"
