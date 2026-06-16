@@ -22,7 +22,7 @@ jobs:
       github.event.workflow_run.event == 'push' &&
       github.event.workflow_run.head_branch == 'main'
     runs-on: [self-hosted, windows, deploy]
-    timeout-minutes: 60
+    timeout-minutes: 120
     env:
       WSL_DISTRO: ${{ vars.WSL_DISTRO || 'Ubuntu' }}
       WSL_DEPLOY_DIR: ${{ vars.WSL_DEPLOY_DIR || '/opt/n8n_whisper_transcriber' }}

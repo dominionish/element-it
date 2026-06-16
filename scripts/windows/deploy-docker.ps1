@@ -82,35 +82,64 @@ $image = "ghcr.io/$repositoryLower/transcriber:sha-$DeploySha"
 $script = @"
 set -euo pipefail
 
+log() {
+  printf '\n[%s] %s\n' "`$(date -Is)" "`$*"
+}
+
 DEPLOY_DIR=$(Quote-Bash $WslDeployDir)
 IMAGE=$(Quote-Bash $image)
 GHCR_USERNAME=$(Quote-Bash $GhcrUsername)
 GHCR_TOKEN=$(Quote-Bash $GhcrToken)
 
+export DOCKER_CLIENT_TIMEOUT=3600
+export COMPOSE_HTTP_TIMEOUT=3600
+export COMPOSE_PROGRESS=plain
+export TRANSCRIBER_IMAGE="`$IMAGE"
+
+log "Docker version"
+docker version
+docker compose version
+
 if [ -n "`$GHCR_TOKEN" ]; then
+  log "Logging in to ghcr.io as `$GHCR_USERNAME"
   printf '%s' "`$GHCR_TOKEN" | docker login ghcr.io -u "`$GHCR_USERNAME" --password-stdin
 fi
 
-export TRANSCRIBER_IMAGE="`$IMAGE"
 cd "`$DEPLOY_DIR"
 
-docker compose --env-file .env -f docker-compose.prod.yml pull
+log "Pulling n8n image"
+docker compose --env-file .env -f docker-compose.prod.yml pull n8n
+
+log "Pulling transcriber image: `$IMAGE"
+docker compose --env-file .env -f docker-compose.prod.yml pull transcriber
+
+log "Starting containers"
 docker compose --env-file .env -f docker-compose.prod.yml up -d --remove-orphans
+
+log "Current compose state"
 docker compose --env-file .env -f docker-compose.prod.yml ps
 
+log "Waiting for whisper_transcriber_api healthcheck"
 healthy=0
 for attempt in `$(seq 1 60); do
-  if docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' whisper_transcriber_api 2>/dev/null | grep -q '^healthy`$'; then
+  status=`$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' whisper_transcriber_api 2>/dev/null || true)
+  if [ "`$status" = "healthy" ]; then
     healthy=1
     break
+  fi
+  if [ "`$attempt" = "1" ] || [ `$((attempt % 6)) -eq 0 ]; then
+    log "Health attempt `$attempt/60: `${status:-container not ready}"
   fi
   sleep 5
 done
 
 if [ "`$healthy" != "1" ]; then
+  log "Transcriber did not become healthy; recent logs follow"
   docker logs --tail 150 whisper_transcriber_api || true
   exit 20
 fi
+
+log "Deployment completed"
 "@
 
 Invoke-WslRoot -Script $script
