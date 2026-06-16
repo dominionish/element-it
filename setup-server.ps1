@@ -82,6 +82,105 @@ function Test-ServiceAccountMatches {
     )
 }
 
+function Grant-LogOnAsServiceRight {
+    param([string]$UserName)
+
+    $sid = $null
+    foreach ($accountName in @(".\$UserName", "$env:COMPUTERNAME\$UserName", $UserName)) {
+        try {
+            $sid = ([Security.Principal.NTAccount]::new($accountName)).
+                Translate([Security.Principal.SecurityIdentifier]).
+                Value
+            break
+        }
+        catch {
+            $sid = $null
+        }
+    }
+
+    if (-not $sid) {
+        throw "Could not resolve Windows account '$UserName' to a SID."
+    }
+
+    $tempDirectory = Join-Path $env:TEMP ("runner-service-rights-" + [guid]::NewGuid().ToString("N"))
+    $exportPath = Join-Path $tempDirectory "current.inf"
+    $importPath = Join-Path $tempDirectory "grant.inf"
+    $databasePath = Join-Path $tempDirectory "grant.sdb"
+    New-Item -ItemType Directory -Force -Path $tempDirectory | Out-Null
+
+    try {
+        $exportOutput = & secedit.exe /export /cfg $exportPath /areas USER_RIGHTS 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            $exportOutput | ForEach-Object { Write-Host $_ }
+            throw "Could not export local security policy to grant Log on as a service."
+        }
+
+        $content = Get-Content -LiteralPath $exportPath -Raw -Encoding Unicode
+        $currentLine = $content -split "\r?\n" |
+            Where-Object { $_ -match "^\s*SeServiceLogonRight\s*=" } |
+            Select-Object -First 1
+
+        $currentEntries = @()
+        if ($currentLine) {
+            $currentEntries = @(
+                ($currentLine -replace "^\s*SeServiceLogonRight\s*=\s*", "") -split "," |
+                    ForEach-Object { $_.Trim() } |
+                    Where-Object { $_ }
+            )
+        }
+
+        $sidEntry = "*$sid"
+        if ($currentEntries -contains $sidEntry) {
+            Write-Host ".\$UserName already has 'Log on as a service'."
+            return
+        }
+
+        $rights = @($currentEntries + $sidEntry) | Select-Object -Unique
+        $importLines = @(
+            "[Unicode]",
+            "Unicode=yes",
+            "[Version]",
+            'signature="$CHICAGO$"',
+            "Revision=1",
+            "[Privilege Rights]",
+            "SeServiceLogonRight = $($rights -join ',')"
+        )
+        Set-Content -LiteralPath $importPath -Value $importLines -Encoding Unicode
+
+        $configureOutput = & secedit.exe /configure /db $databasePath /cfg $importPath /areas USER_RIGHTS 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            $configureOutput | ForEach-Object { Write-Host $_ }
+            throw "Could not grant 'Log on as a service' to .\$UserName."
+        }
+
+        Write-Host "Granted 'Log on as a service' to .\$UserName."
+    }
+    finally {
+        Remove-Item -LiteralPath $tempDirectory -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Show-RunnerServiceStartDiagnostics {
+    param([string]$ServiceName)
+
+    Write-Host ""
+    Write-Host "Runner service diagnostics:" -ForegroundColor Yellow
+    Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue |
+        Select-Object Name, StartName, State, ExitCode, ServiceSpecificExitCode, PathName |
+        Format-List
+
+    Write-Host "Recent Service Control Manager events:" -ForegroundColor Yellow
+    $since = (Get-Date).AddMinutes(-15)
+    Get-WinEvent -FilterHashtable @{
+        LogName = "System"
+        ProviderName = "Service Control Manager"
+        StartTime = $since
+    } -ErrorAction SilentlyContinue |
+        Where-Object { $_.Message -match [regex]::Escape($ServiceName) -or $_.Message -match "actions\.runner" } |
+        Select-Object -First 8 TimeCreated, Id, Message |
+        Format-List
+}
+
 function Install-WingetPackage {
     param(
         [string]$Id,
@@ -596,6 +695,7 @@ if (-not (Test-ServiceAccountMatches -StartName $runnerService.StartName -UserNa
     }
 
     Write-Host "Changing runner service account from '$($runnerService.StartName)' to '.\$ServiceUser'..."
+    Grant-LogOnAsServiceRight -UserName $ServiceUser
     Stop-Service -Name $runnerService.Name -ErrorAction SilentlyContinue
     & sc.exe config $runnerService.Name obj= ".\$ServiceUser" password= $servicePasswordPlain | Out-Host
     if ($LASTEXITCODE -ne 0) {
@@ -603,9 +703,18 @@ if (-not (Test-ServiceAccountMatches -StartName $runnerService.StartName -UserNa
     }
     $runnerService = Get-CimInstance Win32_Service -Filter "Name='$($runnerService.Name)'"
 }
+else {
+    Grant-LogOnAsServiceRight -UserName $ServiceUser
+}
 
 if ($runnerService.State -ne "Running") {
-    Start-Service -Name $runnerService.Name
+    try {
+        Start-Service -Name $runnerService.Name -ErrorAction Stop
+    }
+    catch {
+        Show-RunnerServiceStartDiagnostics -ServiceName $runnerService.Name
+        throw "Could not start the runner service. If the diagnostics mention logon failure, rerun setup-server.ps1 and enter the real Windows password for .\$ServiceUser, not the PIN."
+    }
 }
 Set-Service -Name $runnerService.Name -StartupType Automatic
 
