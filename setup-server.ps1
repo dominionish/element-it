@@ -70,16 +70,31 @@ function Install-WingetPackage {
     )
 
     Write-Host "Installing/checking $Name..."
-    & winget install `
+
+    $listOutput = & winget list --exact --id $Id --accept-source-agreements 2>&1
+    if ($LASTEXITCODE -eq 0 -and (($listOutput -join "`n") -match [regex]::Escape($Id))) {
+        Write-Host "$Name is already installed."
+        return
+    }
+
+    $installOutput = & winget install `
         --exact `
         --id $Id `
         --scope machine `
         --accept-package-agreements `
         --accept-source-agreements `
-        --disable-interactivity
+        --disable-interactivity 2>&1
+    $exitCode = $LASTEXITCODE
+    $installOutput | ForEach-Object { Write-Host $_ }
 
-    if ($LASTEXITCODE -notin @(0, -1978335189)) {
-        throw "winget could not install $Name ($Id), exit code $LASTEXITCODE."
+    if ($exitCode -notin @(0, -1978335189)) {
+        $listOutput = & winget list --exact --id $Id --accept-source-agreements 2>&1
+        if ($LASTEXITCODE -eq 0 -and (($listOutput -join "`n") -match [regex]::Escape($Id))) {
+            Write-Host "$Name appears to be installed after winget returned $exitCode. Continuing."
+            return
+        }
+
+        throw "winget could not install $Name ($Id), exit code $exitCode."
     }
 }
 
@@ -126,6 +141,65 @@ function Invoke-WslRoot {
     if ($LASTEXITCODE -ne 0) {
         throw "WSL command failed with exit code $LASTEXITCODE."
     }
+}
+
+function Get-WslDistros {
+    $output = & wsl.exe -l -q 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        return @()
+    }
+
+    return @(
+        $output |
+            ForEach-Object { ($_ -replace "`0", "").Trim() } |
+            Where-Object { $_ }
+    )
+}
+
+function Test-WslDistroReady {
+    $output = & wsl.exe -d $WslDistro -u root -- bash -lc "echo WSL ready" 2>&1
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -eq 0) {
+        return $true
+    }
+
+    Write-Host ($output -join "`n")
+    return $false
+}
+
+function Ensure-WslDistro {
+    $distros = Get-WslDistros
+    if ($distros -notcontains $WslDistro) {
+        Write-Host "Installing WSL distro $WslDistro..."
+        $installOutput = & wsl.exe --install -d $WslDistro --no-launch 2>&1
+        $exitCode = $LASTEXITCODE
+        $installText = $installOutput -join "`n"
+        $installOutput | ForEach-Object { Write-Host $_ }
+
+        $distros = Get-WslDistros
+        if (
+            $exitCode -ne 0 -and
+            $distros -notcontains $WslDistro -and
+            $installText -notmatch "(?i)already|exist|уже|существ"
+        ) {
+            if ($installText -match "(?i)restart|reboot|перезагруз") {
+                Register-ResumeTaskAndRestart
+            }
+
+            throw "WSL could not install distro '$WslDistro'. Try running 'wsl --install -d $WslDistro' once manually, reboot, then run this setup again."
+        }
+    }
+
+    for ($attempt = 1; $attempt -le 12; $attempt++) {
+        if (Test-WslDistroReady) {
+            return
+        }
+
+        Write-Host "Waiting for WSL distro initialization attempt $attempt/12..."
+        Start-Sleep -Seconds 10
+    }
+
+    throw "WSL distro '$WslDistro' was installed but did not become ready. Reboot Windows, then run setup-server.ps1 again."
 }
 
 function Register-ResumeTaskAndRestart {
@@ -178,7 +252,6 @@ if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
 $packages = @(
     @{ Id = "Git.Git"; Name = "Git" },
     @{ Id = "Microsoft.DotNet.Runtime.8"; Name = ".NET 8 Runtime" },
-    @{ Id = "Microsoft.DotNet.DesktopRuntime.8"; Name = ".NET 8 Desktop Runtime" },
     @{ Id = "Microsoft.VCRedist.2015+.x64"; Name = "Visual C++ Runtime" }
 )
 
@@ -209,12 +282,7 @@ if ($needsRestart -and -not $ResumeAfterReboot) {
 Invoke-Checked -FilePath "wsl.exe" -ArgumentList @("--update")
 Invoke-Checked -FilePath "wsl.exe" -ArgumentList @("--set-default-version", "2")
 
-$distros = (& wsl.exe -l -q) -replace "`0", "" | Where-Object { $_.Trim() }
-if ($distros -notcontains $WslDistro) {
-    Invoke-Checked -FilePath "wsl.exe" -ArgumentList @("--install", "-d", $WslDistro, "--no-launch")
-}
-
-Invoke-Checked -FilePath "wsl.exe" -ArgumentList @("-d", $WslDistro, "-u", "root", "--", "bash", "-lc", "echo WSL ready")
+Ensure-WslDistro
 
 Write-Step "Configuring systemd in WSL"
 Invoke-WslRoot -Script @"
