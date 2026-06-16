@@ -79,7 +79,7 @@ Set-ExecutionPolicy -Scope Process Bypass
 
 1. Новый registration token со страницы
    `Settings -> Actions -> Runners -> New self-hosted runner`.
-2. Пароль для локального пользователя `github-runner`.
+2. Пароль текущего Windows-пользователя, под которым устанавливается WSL.
 
 Остальное он выполнит сам:
 
@@ -88,7 +88,6 @@ Set-ExecutionPolicy -Scope Process Bypass
 - установит NVIDIA Container Toolkit внутри Ubuntu;
 - проверит CUDA через контейнер `nvidia/cuda:12.6.3-base-ubuntu22.04`;
 - установит Git, .NET и Visual C++ Runtime для GitHub runner;
-- создаст пользователя `github-runner`;
 - скачает и зарегистрирует self-hosted runner как Windows-службу с меткой
   `deploy`;
 - создаст `/opt/n8n_whisper_transcriber/.env` внутри WSL;

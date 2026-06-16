@@ -4,7 +4,7 @@ param(
     [string]$RunnerName = $env:COMPUTERNAME,
     [string]$RunnerLabel = "deploy",
     [string]$RunnerDirectory = "C:\actions-runner",
-    [string]$ServiceUser = "github-runner",
+    [string]$ServiceUser = $env:USERNAME,
     [string]$WslDistro = "Ubuntu",
     [string]$WslDeployDirectory = "/opt/n8n_whisper_transcriber",
     [string]$RunnerVersion = "2.335.1",
@@ -61,6 +61,25 @@ function Invoke-Checked {
     if ($LASTEXITCODE -ne 0) {
         throw "$FilePath failed with exit code $LASTEXITCODE."
     }
+}
+
+function Test-ServiceAccountMatches {
+    param(
+        [string]$StartName,
+        [string]$UserName
+    )
+
+    if ([string]::IsNullOrWhiteSpace($StartName)) {
+        return $false
+    }
+
+    $normalized = $StartName.ToLowerInvariant()
+    $user = $UserName.ToLowerInvariant()
+    return (
+        $normalized -eq ".\$user" -or
+        $normalized -eq "$($env:COMPUTERNAME.ToLowerInvariant())\$user" -or
+        $normalized.EndsWith("\$user")
+    )
 }
 
 function Install-WingetPackage {
@@ -460,10 +479,11 @@ $runnerService = Get-CimInstance Win32_Service -ErrorAction SilentlyContinue |
     } |
     Select-Object -First 1
 $needsRunnerRegistration = -not (Test-Path -LiteralPath $runnerConfig) -or -not $runnerService
+$serviceAccountMismatch = $runnerService -and -not (Test-ServiceAccountMatches -StartName $runnerService.StartName -UserName $ServiceUser)
 
 $servicePasswordSecure = $null
 $servicePasswordPlain = $null
-if ($needsRunnerRegistration -or -not (Get-LocalUser -Name $ServiceUser -ErrorAction SilentlyContinue)) {
+if ($needsRunnerRegistration -or $serviceAccountMismatch -or -not (Get-LocalUser -Name $ServiceUser -ErrorAction SilentlyContinue)) {
     $servicePasswordSecure = Read-Host "Password to set/use for .\$ServiceUser" -AsSecureString
     $servicePasswordConfirmation = Read-Host "Repeat the password for .\$ServiceUser" -AsSecureString
     $servicePasswordPlain = ConvertTo-PlainText $servicePasswordSecure
@@ -477,7 +497,7 @@ if ($needsRunnerRegistration -or -not (Get-LocalUser -Name $ServiceUser -ErrorAc
 }
 
 $serviceAccount = Get-LocalUser -Name $ServiceUser -ErrorAction SilentlyContinue
-if ($serviceAccount -and $servicePasswordSecure) {
+if ($serviceAccount -and $servicePasswordSecure -and $ServiceUser -ne $env:USERNAME) {
     Set-LocalUser -Name $ServiceUser -Password $servicePasswordSecure -AccountNeverExpires -PasswordNeverExpires $true
 }
 elseif (-not $serviceAccount) {
@@ -569,6 +589,21 @@ $runnerService = Get-CimInstance Win32_Service |
 if (-not $runnerService) {
     throw "The GitHub Actions runner service was not created."
 }
+
+if (-not (Test-ServiceAccountMatches -StartName $runnerService.StartName -UserName $ServiceUser)) {
+    if (-not $servicePasswordPlain) {
+        throw "Runner service runs as '$($runnerService.StartName)', but WSL was installed for '$ServiceUser'. Re-run setup-server.ps1 and enter the password for .\$ServiceUser."
+    }
+
+    Write-Host "Changing runner service account from '$($runnerService.StartName)' to '.\$ServiceUser'..."
+    Stop-Service -Name $runnerService.Name -ErrorAction SilentlyContinue
+    & sc.exe config $runnerService.Name obj= ".\$ServiceUser" password= $servicePasswordPlain | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not change runner service account to .\$ServiceUser."
+    }
+    $runnerService = Get-CimInstance Win32_Service -Filter "Name='$($runnerService.Name)'"
+}
+
 if ($runnerService.State -ne "Running") {
     Start-Service -Name $runnerService.Name
 }
