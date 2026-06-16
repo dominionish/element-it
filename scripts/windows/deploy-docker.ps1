@@ -36,6 +36,13 @@ function Invoke-WslRoot {
     }
 }
 
+function ConvertTo-WslUncPath {
+    param([string]$LinuxPath)
+
+    $relative = $LinuxPath.TrimStart("/") -replace "/", "\"
+    return "\\wsl.localhost\$WslDistro\$relative"
+}
+
 Write-Host "Deploying $Repository@$DeploySha to ${WslDistro}:$WslDeployDir"
 
 $nativeTask = Get-ScheduledTask -TaskName "n8n-whisper-transcriber" -ErrorAction SilentlyContinue
@@ -44,9 +51,28 @@ if ($nativeTask) {
     Unregister-ScheduledTask -TaskName "n8n-whisper-transcriber" -Confirm:$false
 }
 
-$sourceLinux = (& wsl.exe -d $WslDistro -u root -- wslpath -a "$SourceDir").Trim()
-if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($sourceLinux)) {
-    throw "Could not map source directory into WSL: $SourceDir"
+Invoke-WslRoot -Script @"
+set -euo pipefail
+DEPLOY_DIR=$(Quote-Bash $WslDeployDir)
+mkdir -p "`$DEPLOY_DIR"/data "`$DEPLOY_DIR"/models "`$DEPLOY_DIR"/n8n_data
+"@
+
+$deployUnc = ConvertTo-WslUncPath -LinuxPath $WslDeployDir
+if (-not (Test-Path -LiteralPath $deployUnc)) {
+    throw "Could not access WSL deploy directory through UNC path: $deployUnc"
+}
+
+Copy-Item -LiteralPath (Join-Path $SourceDir "docker-compose.prod.yml") -Destination (Join-Path $deployUnc "docker-compose.prod.yml") -Force
+
+$envPath = Join-Path $deployUnc ".env"
+if (-not (Test-Path -LiteralPath $envPath)) {
+    Copy-Item -LiteralPath (Join-Path $SourceDir ".env.example") -Destination $envPath
+    $key = [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(48))
+    $content = Get-Content -LiteralPath $envPath
+    $content = $content -replace "^TZ=.*", "TZ=Asia/Yekaterinburg"
+    $content = $content -replace "^N8N_HOST=.*", "N8N_HOST=localhost"
+    $content = $content -replace "^N8N_ENCRYPTION_KEY=.*", "N8N_ENCRYPTION_KEY=$key"
+    Set-Content -LiteralPath $envPath -Value $content -Encoding UTF8
 }
 
 $repositoryLower = $Repository.ToLowerInvariant()
@@ -56,21 +82,9 @@ $script = @"
 set -euo pipefail
 
 DEPLOY_DIR=$(Quote-Bash $WslDeployDir)
-SOURCE_DIR=$(Quote-Bash $sourceLinux)
 IMAGE=$(Quote-Bash $image)
 GHCR_USERNAME=$(Quote-Bash $GhcrUsername)
 GHCR_TOKEN=$(Quote-Bash $GhcrToken)
-
-mkdir -p "`$DEPLOY_DIR"/data "`$DEPLOY_DIR"/models "`$DEPLOY_DIR"/n8n_data
-cp "`$SOURCE_DIR/docker-compose.prod.yml" "`$DEPLOY_DIR/docker-compose.prod.yml"
-
-if [ ! -f "`$DEPLOY_DIR/.env" ]; then
-  cp "`$SOURCE_DIR/.env.example" "`$DEPLOY_DIR/.env"
-  key="`$(head -c 48 /dev/urandom | base64)"
-  sed -i "s#^TZ=.*#TZ=Asia/Yekaterinburg#" "`$DEPLOY_DIR/.env"
-  sed -i "s#^N8N_HOST=.*#N8N_HOST=localhost#" "`$DEPLOY_DIR/.env"
-  sed -i "s#^N8N_ENCRYPTION_KEY=.*#N8N_ENCRYPTION_KEY=`$key#" "`$DEPLOY_DIR/.env"
-fi
 
 if [ -n "`$GHCR_TOKEN" ]; then
   printf '%s' "`$GHCR_TOKEN" | docker login ghcr.io -u "`$GHCR_USERNAME" --password-stdin
