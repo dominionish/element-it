@@ -86,6 +86,33 @@ log() {
   printf '\n[%s] %s\n' "`$(date -Is)" "`$*"
 }
 
+retry() {
+  max_attempts="`$1"
+  delay_seconds="`$2"
+  shift 2
+  attempt=1
+
+  while true; do
+    if "`$@"; then
+      return 0
+    fi
+
+    exit_code=`$?
+    if [ "`$attempt" -ge "`$max_attempts" ]; then
+      log "Command failed after `$attempt attempts with exit code `$exit_code: `$*"
+      return "`$exit_code"
+    fi
+
+    log "Command failed with exit code `$exit_code; retrying in `${delay_seconds}s (`$attempt/`$max_attempts): `$*"
+    sleep "`$delay_seconds"
+    attempt=`$((attempt + 1))
+    delay_seconds=`$((delay_seconds * 2))
+    if [ "`$delay_seconds" -gt 300 ]; then
+      delay_seconds=300
+    fi
+  done
+}
+
 DEPLOY_DIR=$(Quote-Bash $WslDeployDir)
 IMAGE=$(Quote-Bash $image)
 GHCR_USERNAME=$(Quote-Bash $GhcrUsername)
@@ -108,10 +135,10 @@ fi
 cd "`$DEPLOY_DIR"
 
 log "Pulling n8n image"
-docker compose --env-file .env -f docker-compose.prod.yml pull n8n
+retry 4 15 docker compose --env-file .env -f docker-compose.prod.yml pull n8n
 
 log "Pulling transcriber image: `$IMAGE"
-docker compose --env-file .env -f docker-compose.prod.yml pull transcriber
+retry 8 30 docker compose --env-file .env -f docker-compose.prod.yml pull transcriber
 
 log "Starting containers"
 docker compose --env-file .env -f docker-compose.prod.yml up -d --remove-orphans
