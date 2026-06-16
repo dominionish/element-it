@@ -460,6 +460,31 @@ function Register-ResumeTaskAndRestart {
     exit
 }
 
+function Register-WslKeepAliveTask {
+    $taskName = "N8nWhisperWslKeepAlive"
+    $taskUser = "$env:COMPUTERNAME\$ServiceUser"
+    $linuxScript = "if ! pgrep -f n8n-whisper-wsl-keepalive >/dev/null 2>&1; then nohup bash -c 'exec -a n8n-whisper-wsl-keepalive sleep infinity' >/dev/null 2>&1 & fi"
+    $linuxScriptEncoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($linuxScript))
+    $command = "& wsl.exe -d $WslDistro -u root -- bash -lc `"printf '%s' '$linuxScriptEncoded' | base64 -d | bash`""
+    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+
+    $action = New-ScheduledTaskAction `
+        -Execute "powershell.exe" `
+        -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -EncodedCommand $encodedCommand"
+    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $taskUser
+    $principal = New-ScheduledTaskPrincipal -UserId $taskUser -LogonType Interactive -RunLevel Highest
+
+    Register-ScheduledTask `
+        -TaskName $taskName `
+        -Action $action `
+        -Trigger $trigger `
+        -Principal $principal `
+        -Force | Out-Null
+
+    Start-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    Write-Host "WSL keep-alive task configured: $taskName"
+}
+
 Assert-Administrator
 
 if ($ResumeAfterReboot) {
@@ -769,6 +794,9 @@ Set-Service -Name $runnerService.Name -StartupType Automatic
 
 $registrationToken = $null
 $servicePasswordPlain = $null
+
+Write-Step "Configuring WSL keep-alive"
+Register-WslKeepAliveTask
 
 Write-Step "Docker server setup completed"
 Write-Host "Runner service:   $($runnerService.Name)" -ForegroundColor Green

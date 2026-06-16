@@ -104,7 +104,19 @@ function Set-WindowsPortProxy {
     }
 }
 
+function Start-WslKeepAlive {
+    Invoke-WslRoot -Script @'
+set -euo pipefail
+if ! pgrep -f n8n-whisper-wsl-keepalive >/dev/null 2>&1; then
+  nohup bash -c 'exec -a n8n-whisper-wsl-keepalive sleep infinity' >/dev/null 2>&1 &
+fi
+'@
+
+    Write-Host "WSL keep-alive process is running for $WslDistro."
+}
+
 Write-Host "Deploying $Repository@$DeploySha to ${WslDistro}:$WslDeployDir"
+Start-WslKeepAlive
 
 $nativeTask = Get-ScheduledTask -TaskName "n8n-whisper-transcriber" -ErrorAction SilentlyContinue
 if ($nativeTask) {
