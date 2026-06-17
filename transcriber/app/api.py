@@ -85,6 +85,42 @@ async def lifespan(_app: FastAPI):
 app = FastAPI(title="Whisper Colab Transcriber API", version="1.0", lifespan=lifespan)
 
 
+@app.middleware("http")
+async def log_planfix_http_requests(request: Request, call_next):
+    if not request.url.path.startswith("/planfix/"):
+        return await call_next(request)
+
+    started = time.time()
+    planfix_log(
+        "входящий HTTP-запрос",
+        method=request.method,
+        path=request.url.path,
+        content_type=request.headers.get("content-type", ""),
+        content_length=request.headers.get("content-length", ""),
+        client=request.client.host if request.client else "",
+    )
+    try:
+        response = await call_next(request)
+    except Exception as error:
+        planfix_log(
+            "ошибка HTTP-запроса до отправки ответа",
+            method=request.method,
+            path=request.url.path,
+            error=repr(error),
+            duration_ms=int((time.time() - started) * 1000),
+        )
+        raise
+
+    planfix_log(
+        "HTTP-ответ отправлен",
+        method=request.method,
+        path=request.url.path,
+        status_code=response.status_code,
+        duration_ms=int((time.time() - started) * 1000),
+    )
+    return response
+
+
 def now_iso():
     return datetime.now().isoformat(timespec="seconds")
 
