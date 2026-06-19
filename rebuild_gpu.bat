@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-echo Rebuilding Whisper Transcriber GPU image...
+echo Rebuilding Whisper Transcriber GPU, Analysis and Planfix images...
 where docker >nul 2>nul
 if errorlevel 1 (
   echo ERROR: Docker not found. Install Docker Desktop and start it.
@@ -15,7 +15,7 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-docker compose -f docker-compose.gpu.yml build transcriber
+docker compose -f docker-compose.gpu.yml build transcriber analysis planfix
 if errorlevel 1 (
   echo ERROR: GPU image build failed.
   pause

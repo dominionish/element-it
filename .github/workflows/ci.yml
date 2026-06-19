@@ -42,8 +42,14 @@ jobs:
       - name: Validate production compose config
         run: docker compose -f docker-compose.prod.yml --env-file .env.example config --quiet
 
-      - name: Check Dockerfile
+      - name: Check transcriber Dockerfile
         run: docker buildx build --check -f transcriber/Dockerfile transcriber
+
+      - name: Check Planfix Dockerfile
+        run: docker buildx build --check -f transcriber/Dockerfile.planfix transcriber
+
+      - name: Check analysis Dockerfile
+        run: docker buildx build --check -f transcriber/Dockerfile.analysis transcriber
 
   publish-image:
     name: Publish Docker image
@@ -61,10 +67,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set image name
-        id: image
+      - name: Set image names
+        id: images
         shell: bash
-        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}/transcriber" >> "$GITHUB_OUTPUT"
+        run: |
+          echo "transcriber=ghcr.io/${GITHUB_REPOSITORY,,}/transcriber" >> "$GITHUB_OUTPUT"
+          echo "planfix=ghcr.io/${GITHUB_REPOSITORY,,}/planfix" >> "$GITHUB_OUTPUT"
+          echo "analysis=ghcr.io/${GITHUB_REPOSITORY,,}/analysis" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -77,10 +86,10 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Extract Docker metadata
-        id: meta
+        id: transcriber_meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ steps.image.outputs.name }}
+          images: ${{ steps.images.outputs.transcriber }}
           tags: |
             type=sha,prefix=sha-
             type=raw,value=sha-${{ github.sha }}
@@ -94,7 +103,53 @@ jobs:
           context: transcriber
           file: transcriber/Dockerfile
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: ${{ steps.transcriber_meta.outputs.tags }}
+          labels: ${{ steps.transcriber_meta.outputs.labels }}
+          cache-from: type=gha,scope=transcriber
+          cache-to: type=gha,mode=max,scope=transcriber
+
+      - name: Extract Planfix Docker metadata
+        id: planfix_meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.images.outputs.planfix }}
+          tags: |
+            type=sha,prefix=sha-
+            type=raw,value=sha-${{ github.sha }}
+            type=ref,event=branch
+            type=ref,event=tag
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
+
+      - name: Build and push Planfix image
+        uses: docker/build-push-action@v6
+        with:
+          context: transcriber
+          file: transcriber/Dockerfile.planfix
+          push: true
+          tags: ${{ steps.planfix_meta.outputs.tags }}
+          labels: ${{ steps.planfix_meta.outputs.labels }}
+          cache-from: type=gha,scope=planfix
+          cache-to: type=gha,mode=max,scope=planfix
+
+      - name: Extract analysis Docker metadata
+        id: analysis_meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.images.outputs.analysis }}
+          tags: |
+            type=sha,prefix=sha-
+            type=raw,value=sha-${{ github.sha }}
+            type=ref,event=branch
+            type=ref,event=tag
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' }}
+
+      - name: Build and push analysis image
+        uses: docker/build-push-action@v6
+        with:
+          context: transcriber
+          file: transcriber/Dockerfile.analysis
+          push: true
+          tags: ${{ steps.analysis_meta.outputs.tags }}
+          labels: ${{ steps.analysis_meta.outputs.labels }}
+          cache-from: type=gha,scope=analysis
+          cache-to: type=gha,mode=max,scope=analysis

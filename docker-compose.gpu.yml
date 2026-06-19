@@ -17,6 +17,7 @@ services:
     restart: unless-stopped
 
   transcriber:
+    image: ${TRANSCRIBER_LOCAL_IMAGE:-whisper_transcriber_api:local}
     build:
       context: ./transcriber
       args:
@@ -29,15 +30,6 @@ services:
     environment:
       - TZ=${TZ:-Europe/Moscow}
       - DATA_DIR=/data
-      - PLANFIX_AUDIO_EXTENSIONS=${PLANFIX_AUDIO_EXTENSIONS:-.mp3,.m4a,.wav,.ogg,.opus,.webm,.aac,.flac,.mp4,.mov,.mkv,.avi}
-      - PLANFIX_CREATE_TRANSCRIBE_JOBS=${PLANFIX_CREATE_TRANSCRIBE_JOBS:-true}
-      - PLANFIX_ALLOWED_FILE_URL_HOSTS=${PLANFIX_ALLOWED_FILE_URL_HOSTS:-planfix.ru,.planfix.ru}
-      - PLANFIX_FILE_URL_TIMEOUT=${PLANFIX_FILE_URL_TIMEOUT:-120}
-      - PLANFIX_RESULT_WEBHOOK_ID=${PLANFIX_RESULT_WEBHOOK_ID:-}
-      - PLANFIX_RESULT_WEBHOOK_URL=${PLANFIX_RESULT_WEBHOOK_URL:-}
-      - PLANFIX_RESULT_FILE_FIELD=${PLANFIX_RESULT_FILE_FIELD:-txt_file}
-      - PLANFIX_RESULT_TIMEOUT=${PLANFIX_RESULT_TIMEOUT:-120}
-      - PLANFIX_ALLOWED_RESULT_HOSTS=${PLANFIX_ALLOWED_RESULT_HOSTS:-planfix.ru,.planfix.ru}
       - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
       - NVIDIA_DRIVER_CAPABILITIES=${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
     volumes:
@@ -50,4 +42,62 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+    restart: unless-stopped
+
+  analysis:
+    image: ${ANALYSIS_LOCAL_IMAGE:-meeting_analysis_service:local}
+    build:
+      context: ./transcriber
+      dockerfile: Dockerfile.analysis
+    container_name: meeting_analysis_service
+    ports:
+      - "${ANALYSIS_HOST_PORT:-7863}:7863"
+    environment:
+      - TZ=${TZ:-Europe/Moscow}
+      - DATA_DIR=/data
+      - PROXYAPI_API_KEY=${PROXYAPI_API_KEY:-}
+      - PROXYAPI_CHAT_COMPLETIONS_URL=${PROXYAPI_CHAT_COMPLETIONS_URL:-https://api.proxyapi.ru/openai/v1/chat/completions}
+      - PROXYAPI_MODEL=${PROXYAPI_MODEL:-gpt-5-mini-2025-08-07}
+      - PROXYAPI_TIMEOUT=${PROXYAPI_TIMEOUT:-600}
+      - PROXYAPI_MAX_COMPLETION_TOKENS=${PROXYAPI_MAX_COMPLETION_TOKENS:-12000}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANALYSIS_MAX_TRANSCRIPT_CHARS=${ANALYSIS_MAX_TRANSCRIPT_CHARS:-1500000}
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+
+  planfix:
+    image: ${PLANFIX_LOCAL_IMAGE:-planfix_transcriber_service:local}
+    build:
+      context: ./transcriber
+      dockerfile: Dockerfile.planfix
+    container_name: planfix_transcriber_service
+    ports:
+      - "${PLANFIX_HOST_PORT:-7862}:7862"
+    environment:
+      - TZ=${TZ:-Europe/Moscow}
+      - DATA_DIR=/data
+      - PLANFIX_TRANSCRIBER_URL=${PLANFIX_TRANSCRIBER_URL:-http://transcriber:7861}
+      - PLANFIX_TRANSCRIBER_TIMEOUT=${PLANFIX_TRANSCRIBER_TIMEOUT:-30}
+      - PLANFIX_ANALYSIS_URL=${PLANFIX_ANALYSIS_URL:-http://analysis:7863}
+      - PLANFIX_ANALYSIS_TIMEOUT=${PLANFIX_ANALYSIS_TIMEOUT:-30}
+      - PLANFIX_CREATE_ANALYSIS_JOBS=${PLANFIX_CREATE_ANALYSIS_JOBS:-true}
+      - PLANFIX_RESULT_POLL_INTERVAL=${PLANFIX_RESULT_POLL_INTERVAL:-10}
+      - PLANFIX_RESULT_MAX_POLLS=${PLANFIX_RESULT_MAX_POLLS:-720}
+      - PLANFIX_AUDIO_EXTENSIONS=${PLANFIX_AUDIO_EXTENSIONS:-.mp3,.m4a,.wav,.ogg,.opus,.webm,.aac,.flac,.mp4,.mov,.mkv,.avi}
+      - PLANFIX_CREATE_TRANSCRIBE_JOBS=${PLANFIX_CREATE_TRANSCRIBE_JOBS:-true}
+      - PLANFIX_ALLOWED_FILE_URL_HOSTS=${PLANFIX_ALLOWED_FILE_URL_HOSTS:-planfix.ru,.planfix.ru}
+      - PLANFIX_FILE_URL_TIMEOUT=${PLANFIX_FILE_URL_TIMEOUT:-120}
+      - PLANFIX_TRANSCRIBE_MODEL=${PLANFIX_TRANSCRIBE_MODEL:-medium}
+      - PLANFIX_RESULT_WEBHOOK_ID=${PLANFIX_RESULT_WEBHOOK_ID:-}
+      - PLANFIX_RESULT_WEBHOOK_URL=${PLANFIX_RESULT_WEBHOOK_URL:-}
+      - PLANFIX_RESULT_FILE_FIELD=${PLANFIX_RESULT_FILE_FIELD:-txt_file}
+      - PLANFIX_ANALYSIS_FILE_FIELD=${PLANFIX_ANALYSIS_FILE_FIELD:-txt_file}
+      - PLANFIX_RESULT_TIMEOUT=${PLANFIX_RESULT_TIMEOUT:-120}
+      - PLANFIX_ALLOWED_RESULT_HOSTS=${PLANFIX_ALLOWED_RESULT_HOSTS:-planfix.ru,.planfix.ru}
+    volumes:
+      - ./data:/data
+    depends_on:
+      - transcriber
+      - analysis
     restart: unless-stopped

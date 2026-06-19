@@ -1,0 +1,15 @@
+FROM python:3.12-slim-bookworm
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DEFAULT_TIMEOUT=120 \
+    PIP_RETRIES=10
+
+WORKDIR /app
+COPY requirements-analysis.txt /app/requirements-analysis.txt
+RUN python -m pip install --upgrade pip \
+    && python -m pip install -r /app/requirements-analysis.txt
+COPY app/analysis_service.py /app/analysis_service.py
+
+EXPOSE 7863
+CMD ["uvicorn", "analysis_service:app", "--host", "0.0.0.0", "--port", "7863"]

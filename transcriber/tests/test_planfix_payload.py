@@ -4,10 +4,11 @@ import sys
 import tempfile
 import types
 import unittest
+import json
 from pathlib import Path
 
 
-def load_api_module(data_dir: str):
+def install_transcriber_stubs():
     transcribe_stub = types.ModuleType("transcribe_original")
     transcribe_stub.transcribe = lambda **kwargs: (None, None)
     transcribe_stub.gpu_status = lambda: {"cuda_available": False, "device": "cpu"}
@@ -21,10 +22,25 @@ def load_api_module(data_dir: str):
     sys.modules["python_multipart"] = multipart_stub
     sys.modules["python_multipart.multipart"] = multipart_parser_stub
 
-    os.environ["DATA_DIR"] = data_dir
 
-    api_path = Path(__file__).parents[1] / "app" / "api.py"
-    spec = importlib.util.spec_from_file_location("test_planfix_api", api_path)
+def install_analysis_stubs():
+    docx_stub = types.ModuleType("docx")
+    docx_stub.Document = object
+    docx_enum_stub = types.ModuleType("docx.enum")
+    docx_enum_text_stub = types.ModuleType("docx.enum.text")
+    docx_enum_text_stub.WD_ALIGN_PARAGRAPH = types.SimpleNamespace(CENTER=1)
+    docx_shared_stub = types.ModuleType("docx.shared")
+    docx_shared_stub.Pt = lambda value: value
+    sys.modules["docx"] = docx_stub
+    sys.modules["docx.enum"] = docx_enum_stub
+    sys.modules["docx.enum.text"] = docx_enum_text_stub
+    sys.modules["docx.shared"] = docx_shared_stub
+
+
+def load_app_module(file_name: str, module_name: str, data_dir: str):
+    os.environ["DATA_DIR"] = data_dir
+    app_path = Path(__file__).parents[1] / "app" / file_name
+    spec = importlib.util.spec_from_file_location(module_name, app_path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -34,7 +50,8 @@ class PlanfixCommentPayloadTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.temp_dir = tempfile.TemporaryDirectory()
-        cls.api = load_api_module(cls.temp_dir.name)
+        os.environ["PLANFIX_TRANSCRIBER_URL"] = "http://transcriber:7861"
+        cls.api = load_app_module("planfix_service.py", "test_planfix_service", cls.temp_dir.name)
 
     @classmethod
     def tearDownClass(cls):
@@ -99,20 +116,38 @@ class PlanfixCommentPayloadTests(unittest.TestCase):
         self.assertTrue(different_file)
         self.assertEqual("request-1", previous["request_id"])
 
-    def test_ready_jobs_are_processed_sequentially(self):
-        order = []
-        original_process_job = self.api.process_job
-        self.api.process_job = lambda job: order.append(job["job_id"])
+    def test_planfix_creates_transcriber_job_through_http_api(self):
+        captured = {}
+
+        def fake_transcriber_request(path, data=None, timeout=None):
+            captured["path"] = path
+            captured["data"] = data
+            captured["timeout"] = timeout
+            return {"job_id": "job-1", "status": "queued"}
+
+        audio_path = Path(self.temp_dir.name) / "voice.ogg"
+        audio_path.write_bytes(b"audio")
+        original_request = self.api.transcriber_json_request
+        self.api.transcriber_json_request = fake_transcriber_request
         try:
-            self.api.write_json(self.api.ready_file("job-2"), {"job_id": "job-2"})
-            self.api.write_json(self.api.ready_file("job-1"), {"job_id": "job-1"})
-
-            processed = self.api.process_ready_jobs_once()
+            job_id = self.api.create_planfix_transcription_job(
+                audio_path,
+                "42",
+                "example.planfix.ru",
+                "voice.ogg",
+                {"project": "Project", "model": "small"},
+                None,
+            )
         finally:
-            self.api.process_job = original_process_job
+            self.api.transcriber_json_request = original_request
 
-        self.assertEqual(2, processed)
-        self.assertEqual(["job-1", "job-2"], order)
+        queued = self.api.read_json(self.api.planfix_result_queue_file("job-1"))
+        self.assertEqual("job-1", job_id)
+        self.assertEqual("/jobs", captured["path"])
+        self.assertEqual(str(audio_path), captured["data"]["input_path"])
+        self.assertEqual("small", captured["data"]["model"])
+        self.assertEqual("waiting", queued["status"])
+        self.assertEqual("42", queued["task_id"])
 
     def test_result_webhook_sends_txt_as_multipart_file(self):
         captured = {}
@@ -143,9 +178,9 @@ class PlanfixCommentPayloadTests(unittest.TestCase):
             result = self.api.send_planfix_result(
                 {
                     "job_id": "job-1",
-                    "planfix_task_id": "42",
-                    "planfix_project": "Project",
-                    "planfix_source_name": "meeting.m4a",
+                    "task_id": "42",
+                    "project": "Project",
+                    "source_name": "meeting.m4a",
                     "company": "example.planfix.ru",
                 },
                 txt_path,
@@ -169,6 +204,159 @@ class PlanfixCommentPayloadTests(unittest.TestCase):
 
         self.assertEqual("Sedaya noch - Yuriy Shatunov.txt", name)
         self.assertNotIn("?", name)
+
+    def test_analysis_stage_downloads_and_sends_both_documents(self):
+        queue_path = self.api.PLANFIX_RESULTS_DIR / "analysis-stage.json"
+        job = {
+            "status": "analysis_waiting",
+            "job_id": "transcription-job",
+            "analysis_job_id": "analysis-job",
+            "analysis_polls": 0,
+            "task_id": "42",
+            "project": "Project",
+            "company": "example.planfix.ru",
+            "source_name": "meeting.m4a",
+        }
+        self.api.write_json(queue_path, job)
+        sent_types = []
+
+        original_status = self.api.analysis_json_request
+        original_download = self.api.analysis_download_file
+        original_send = self.api.send_planfix_result
+        self.api.analysis_json_request = lambda path: {"status": "done"}
+        self.api.analysis_download_file = lambda path, target: target.write_bytes(b"docx")
+
+        def fake_send(job_data, path, **kwargs):
+            sent_types.append(kwargs["document_type"])
+            return {"sent": True, "file_name": path.name}
+
+        self.api.send_planfix_result = fake_send
+        try:
+            processed = self.api.process_analysis_result_stage(queue_path, job)
+        finally:
+            self.api.analysis_json_request = original_status
+            self.api.analysis_download_file = original_download
+            self.api.send_planfix_result = original_send
+
+        saved = self.api.read_json(queue_path)
+        self.assertEqual(1, processed)
+        self.assertEqual("analysis_sent", saved["status"])
+        self.assertEqual(["essay", "protocol"], sent_types)
+
+
+class MeetingAnalysisApiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.temp_dir = tempfile.TemporaryDirectory()
+        install_analysis_stubs()
+        cls.api = load_app_module("analysis_service.py", "test_analysis_service", cls.temp_dir.name)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.temp_dir.cleanup()
+
+    def test_proxyapi_request_uses_chat_completions_model_prompt_and_schema(self):
+        captured = {}
+        result = {
+            "essay": "Краткое эссе",
+            "meeting_title": "Совещание",
+            "meeting_date": "Не указана",
+            "participants": [],
+            "summary": "Итоги",
+            "agenda": [],
+            "decisions": [],
+            "assignments": [],
+        }
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+            def read(self):
+                return json.dumps({
+                    "id": "chatcmpl-1",
+                    "model": "gpt-5-mini-2025-08-07",
+                    "choices": [{
+                        "finish_reason": "stop",
+                        "message": {"content": json.dumps(result, ensure_ascii=False)},
+                    }],
+                    "usage": {"prompt_tokens": 20, "completion_tokens": 30, "total_tokens": 50},
+                }, ensure_ascii=False).encode("utf-8")
+
+        def fake_urlopen(request, timeout):
+            captured["request"] = request
+            captured["timeout"] = timeout
+            return Response()
+
+        original_urlopen = self.api.urlopen
+        original_key = self.api.PROXYAPI_API_KEY
+        self.api.urlopen = fake_urlopen
+        self.api.PROXYAPI_API_KEY = "test-key"
+        try:
+            response = self.api.proxyapi_request("Текст стенограммы")
+        finally:
+            self.api.urlopen = original_urlopen
+            self.api.PROXYAPI_API_KEY = original_key
+
+        request_payload = json.loads(captured["request"].data.decode("utf-8"))
+        self.assertEqual("gpt-5-mini-2025-08-07", request_payload["model"])
+        self.assertIn(self.api.MEETING_ANALYSIS_PROMPT, request_payload["messages"][1]["content"])
+        self.assertEqual("json_schema", request_payload["response_format"]["type"])
+        self.assertEqual(
+            "meeting_analysis",
+            request_payload["response_format"]["json_schema"]["name"],
+        )
+        self.assertEqual("Краткое эссе", response["essay"])
+        self.assertEqual("chatcmpl-1", response["provider_response_id"])
+
+    def test_create_job_is_idempotent_for_request_key(self):
+        request = self.api.AnalysisJobRequest(
+            transcript="Текст стенограммы",
+            task_id="42",
+            source_name="meeting.m4a",
+            request_key="transcription-job-42",
+        )
+
+        first = self.api.create_job(request)
+        second = self.api.create_job(request)
+        status = self.api.read_json(self.api.status_file(first["job_id"]))
+
+        self.assertEqual(first["job_id"], second["job_id"])
+        self.assertFalse(first["duplicate"])
+        self.assertTrue(second["duplicate"])
+        self.assertEqual("queued", status["status"])
+        self.assertEqual(first["job_id"], status["job_id"])
+
+
+class TranscriberQueueTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.temp_dir = tempfile.TemporaryDirectory()
+        install_transcriber_stubs()
+        cls.api = load_app_module("api.py", "test_transcriber_api", cls.temp_dir.name)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.temp_dir.cleanup()
+
+    def test_ready_jobs_are_processed_sequentially(self):
+        order = []
+        original_process_job = self.api.process_job
+        self.api.process_job = lambda job: order.append(job["job_id"])
+        try:
+            self.api.write_json(self.api.ready_file("job-2"), {"job_id": "job-2"})
+            self.api.write_json(self.api.ready_file("job-1"), {"job_id": "job-1"})
+
+            processed = self.api.process_ready_jobs_once()
+        finally:
+            self.api.process_job = original_process_job
+
+        self.assertEqual(2, processed)
+        self.assertEqual(["job-1", "job-2"], order)
+
 
 if __name__ == "__main__":
     unittest.main()

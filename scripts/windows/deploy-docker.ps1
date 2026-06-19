@@ -185,13 +185,37 @@ if [ ! -f "`$DEPLOY_DIR/.env" ]; then
   printf '%s' '$encodedEnv' | base64 -d >"`$DEPLOY_DIR/.env"
   chmod 600 "`$DEPLOY_DIR/.env"
 fi
-if ! grep -q '^PLANFIX_TRANSCRIBE_MODEL=' "`$DEPLOY_DIR/.env"; then
-  printf '\nPLANFIX_TRANSCRIBE_MODEL=small\n' >>"`$DEPLOY_DIR/.env"
-fi
+ensure_env() {
+  key="`$1"
+  value="`$2"
+  if ! grep -q "^`$key=" "`$DEPLOY_DIR/.env"; then
+    printf '\n%s=%s\n' "`$key" "`$value" >>"`$DEPLOY_DIR/.env"
+  fi
+}
+ensure_env PLANFIX_HOST_PORT 7862
+ensure_env PLANFIX_IMAGE ghcr.io/element-it/element-it/planfix:latest
+ensure_env PLANFIX_TRANSCRIBER_URL http://transcriber:7861
+ensure_env PLANFIX_TRANSCRIBER_TIMEOUT 30
+ensure_env PLANFIX_ANALYSIS_URL http://analysis:7863
+ensure_env PLANFIX_ANALYSIS_TIMEOUT 30
+ensure_env PLANFIX_CREATE_ANALYSIS_JOBS true
+ensure_env PLANFIX_RESULT_POLL_INTERVAL 10
+ensure_env PLANFIX_RESULT_MAX_POLLS 720
+ensure_env PLANFIX_TRANSCRIBE_MODEL medium
+ensure_env PLANFIX_ANALYSIS_FILE_FIELD txt_file
+ensure_env ANALYSIS_HOST_PORT 7863
+ensure_env ANALYSIS_IMAGE ghcr.io/element-it/element-it/analysis:latest
+ensure_env PROXYAPI_API_KEY ''
+ensure_env PROXYAPI_CHAT_COMPLETIONS_URL https://api.proxyapi.ru/openai/v1/chat/completions
+ensure_env PROXYAPI_MODEL gpt-5-mini-2025-08-07
+ensure_env PROXYAPI_TIMEOUT 600
+ensure_env PROXYAPI_MAX_COMPLETION_TOKENS 12000
 "@
 
 $repositoryLower = $Repository.ToLowerInvariant()
 $image = "ghcr.io/$repositoryLower/transcriber:sha-$DeploySha"
+$planfixImage = "ghcr.io/$repositoryLower/planfix:sha-$DeploySha"
+$analysisImage = "ghcr.io/$repositoryLower/analysis:sha-$DeploySha"
 
 $script = @"
 set -euo pipefail
@@ -229,6 +253,8 @@ retry() {
 
 DEPLOY_DIR=$(Quote-Bash $WslDeployDir)
 IMAGE=$(Quote-Bash $image)
+PLANFIX_IMAGE_VALUE=$(Quote-Bash $planfixImage)
+ANALYSIS_IMAGE_VALUE=$(Quote-Bash $analysisImage)
 GHCR_USERNAME=$(Quote-Bash $GhcrUsername)
 GHCR_TOKEN=$(Quote-Bash $GhcrToken)
 
@@ -236,6 +262,8 @@ export DOCKER_CLIENT_TIMEOUT=3600
 export COMPOSE_HTTP_TIMEOUT=3600
 export COMPOSE_PROGRESS=plain
 export TRANSCRIBER_IMAGE="`$IMAGE"
+export PLANFIX_IMAGE="`$PLANFIX_IMAGE_VALUE"
+export ANALYSIS_IMAGE="`$ANALYSIS_IMAGE_VALUE"
 
 log "Docker version"
 docker version
@@ -252,7 +280,9 @@ log "Pulling n8n image"
 retry 4 15 docker compose --env-file .env -f docker-compose.prod.yml pull n8n
 
 log "Pulling transcriber image: `$IMAGE"
-retry 8 30 docker compose --env-file .env -f docker-compose.prod.yml pull transcriber
+log "Pulling Planfix image: `$PLANFIX_IMAGE_VALUE"
+log "Pulling analysis image: `$ANALYSIS_IMAGE_VALUE"
+retry 8 30 docker compose --env-file .env -f docker-compose.prod.yml pull transcriber analysis planfix
 
 log "Starting containers"
 docker compose --env-file .env -f docker-compose.prod.yml up -d --remove-orphans
@@ -280,10 +310,50 @@ if [ "`$healthy" != "1" ]; then
   exit 20
 fi
 
+log "Waiting for meeting_analysis_service healthcheck"
+analysis_healthy=0
+for attempt in `$(seq 1 60); do
+  status=`$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' meeting_analysis_service 2>/dev/null || true)
+  if [ "`$status" = "healthy" ]; then
+    analysis_healthy=1
+    break
+  fi
+  if [ "`$attempt" = "1" ] || [ `$((attempt % 6)) -eq 0 ]; then
+    log "Analysis health attempt `$attempt/60: `${status:-container not ready}"
+  fi
+  sleep 5
+done
+
+if [ "`$analysis_healthy" != "1" ]; then
+  log "Analysis service did not become healthy; recent logs follow"
+  docker logs --tail 150 meeting_analysis_service || true
+  exit 22
+fi
+
+log "Waiting for planfix_transcriber_service healthcheck"
+planfix_healthy=0
+for attempt in `$(seq 1 60); do
+  status=`$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' planfix_transcriber_service 2>/dev/null || true)
+  if [ "`$status" = "healthy" ]; then
+    planfix_healthy=1
+    break
+  fi
+  if [ "`$attempt" = "1" ] || [ `$((attempt % 6)) -eq 0 ]; then
+    log "Planfix health attempt `$attempt/60: `${status:-container not ready}"
+  fi
+  sleep 5
+done
+
+if [ "`$planfix_healthy" != "1" ]; then
+  log "Planfix gateway did not become healthy; recent logs follow"
+  docker logs --tail 150 planfix_transcriber_service || true
+  exit 21
+fi
+
 log "Deployment completed"
 "@
 
 Invoke-WslRoot -Script $script
 $wslIpAddress = Get-WslIpAddress
-Set-WindowsPortProxy -WslIpAddress $wslIpAddress -Ports @(5678, 7861)
-Write-Host "Docker deployment is healthy: http://localhost:7861/health"
+Set-WindowsPortProxy -WslIpAddress $wslIpAddress -Ports @(5678, 7861, 7862, 7863)
+Write-Host "Docker deployment is healthy: http://localhost:7861/health, http://localhost:7862/health and http://localhost:7863/health"

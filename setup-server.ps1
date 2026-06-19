@@ -606,14 +606,33 @@ N8N_ENCRYPTION_KEY=$encryptionKey
 TRANSCRIBER_HOST_PORT=7861
 TRANSCRIBER_IMAGE=ghcr.io/element-it/element-it/transcriber:latest
 
+ANALYSIS_HOST_PORT=7863
+ANALYSIS_IMAGE=ghcr.io/element-it/element-it/analysis:latest
+PROXYAPI_API_KEY=
+PROXYAPI_CHAT_COMPLETIONS_URL=https://api.proxyapi.ru/openai/v1/chat/completions
+PROXYAPI_MODEL=gpt-5-mini-2025-08-07
+PROXYAPI_TIMEOUT=600
+PROXYAPI_MAX_COMPLETION_TOKENS=12000
+ANALYSIS_MAX_TRANSCRIPT_CHARS=1500000
+
+PLANFIX_HOST_PORT=7862
+PLANFIX_IMAGE=ghcr.io/element-it/element-it/planfix:latest
+PLANFIX_TRANSCRIBER_URL=http://transcriber:7861
+PLANFIX_TRANSCRIBER_TIMEOUT=30
+PLANFIX_ANALYSIS_URL=http://analysis:7863
+PLANFIX_ANALYSIS_TIMEOUT=30
+PLANFIX_CREATE_ANALYSIS_JOBS=true
+PLANFIX_RESULT_POLL_INTERVAL=10
+PLANFIX_RESULT_MAX_POLLS=720
 PLANFIX_AUDIO_EXTENSIONS=.mp3,.m4a,.wav,.ogg,.opus,.webm,.aac,.flac,.mp4,.mov,.mkv,.avi
 PLANFIX_CREATE_TRANSCRIBE_JOBS=true
 PLANFIX_ALLOWED_FILE_URL_HOSTS=planfix.ru,.planfix.ru
 PLANFIX_FILE_URL_TIMEOUT=120
-PLANFIX_TRANSCRIBE_MODEL=small
+PLANFIX_TRANSCRIBE_MODEL=medium
 PLANFIX_RESULT_WEBHOOK_ID=
 PLANFIX_RESULT_WEBHOOK_URL=
 PLANFIX_RESULT_FILE_FIELD=txt_file
+PLANFIX_ANALYSIS_FILE_FIELD=txt_file
 PLANFIX_RESULT_TIMEOUT=120
 PLANFIX_ALLOWED_RESULT_HOSTS=planfix.ru,.planfix.ru
 
@@ -635,7 +654,9 @@ fi
 Write-Step "Opening Windows Firewall ports"
 foreach ($rule in @(
     @{ Name = "n8n"; Port = 5678 },
-    @{ Name = "Whisper API"; Port = 7861 }
+    @{ Name = "Whisper API"; Port = 7861 },
+    @{ Name = "Planfix Gateway"; Port = 7862 },
+    @{ Name = "Meeting Analysis API"; Port = 7863 }
 )) {
     if (-not (Get-NetFirewallRule -DisplayName $rule.Name -ErrorAction SilentlyContinue)) {
         New-NetFirewallRule `

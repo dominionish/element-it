@@ -21,5 +21,5 @@ RUN python3 -m pip install --upgrade pip \
     && python3 -m pip install -r /app/requirements.txt
 COPY app /app
 
-EXPOSE 7861
+EXPOSE 7861 7862
 CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "7861"]
